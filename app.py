@@ -4,17 +4,30 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-# 網頁設定
-st.set_page_config(page_title="AI 股票分析師系統", layout="wide")
+# --- 1. 網頁基礎設定 ---
+st.set_page_config(page_title="AI 投資戰情室", layout="wide")
 
-# --- 雲端串接設定區 ---
-# 請在此處貼上你的 Google Sheets 共用網址
+# 注入自定義 CSS：黑魂專業風格
+st.markdown("""
+    <style>
+    .stApp { background-color: #0E1117; color: #FFFFFF; }
+    div[data-testid="stMetric"] {
+        background-color: #1E2129;
+        border-radius: 15px;
+        padding: 20px;
+        border: 1px solid #30363D;
+    }
+    .stTabs [data-baseweb="tab-list"] { gap: 24px; }
+    .stTabs [data-baseweb="tab"] { height: 50px; font-weight: 600; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- 2. 雲端串接與防呆處理 ---
+# 請在此貼上你的 Google Sheets 網址
 RAW_URL = "https://docs.google.com/spreadsheets/d/1modHzl33LKOCGoRrobrMCaNEO5Phebe3Vl8eIUScU9M/edit?gid=0#gid=0"
 
-# 自動處理網址轉換邏輯
 if "docs.google.com" in RAW_URL:
-    base_url = RAW_URL.split("/edit")[0]
-    GOOGLE_SHEET_URL = f"{base_url}/export?format=csv"
+    GOOGLE_SHEET_URL = RAW_URL.split("/edit")[0] + "/export?format=csv"
 else:
     GOOGLE_SHEET_URL = RAW_URL
 
@@ -22,117 +35,118 @@ else:
 def load_gsheets(url):
     try:
         df = pd.read_csv(url)
-        # 移除欄位名稱可能的空格
+        # 強制移除標題空格，避免 KeyError: 'Ticker'
         df.columns = df.columns.str.strip()
         return df
-    except:
+    except Exception as e:
         return None
 
-# --- 技術指標計算 ---
-def add_indicators(df):
-    # 布林通道 (20日標準差)
-    df['MA20'] = df['Close'].rolling(window=20).mean()
-    df['STD'] = df['Close'].rolling(window=20).std()
-    df['Upper'] = df['MA20'] + (df['STD'] * 2)
-    df['Lower'] = df['MA20'] - (df['STD'] * 2)
-    
-    # RSI 指標 (14日)
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
-    return df
-
-# --- 介面邏輯 ---
+# --- 3. 側邊欄：數據源管理 ---
 with st.sidebar:
     st.header("📊 數據來源")
     inventory_df = load_gsheets(GOOGLE_SHEET_URL)
     
-    if inventory_df is not None and not inventory_df.empty:
-        st.success("✅ 雲端連線成功")
-        selected_ticker = st.selectbox("我的庫存清單", inventory_df['Ticker'].unique())
+    if inventory_df is not None and 'Ticker' in inventory_df.columns:
+        st.success("✅ 雲端資料同步中")
+        # 取得不重複的代號清單
+        ticker_list = inventory_df['Ticker'].dropna().unique().tolist()
+        selected_ticker = st.selectbox("選擇我的持股", ticker_list)
+        
+        # 抓取該標的在 Sheets 裡的資訊
         user_row = inventory_df[inventory_df['Ticker'] == selected_ticker].iloc[0]
-        stock_id = selected_ticker.upper()
+        stock_id = str(selected_ticker).upper()
         my_cost = float(user_row['Buy_Price'])
         my_shares = int(user_row['Shares'])
+        
+        # 讀取 analyzer.py 寫回來的 AI 建議 (如果有的話)
+        ai_advice_from_sheet = user_row.get('AI Advice', None)
+        growth_from_sheet = user_row.get('Growth', None)
     else:
-        st.warning("⚠️ 模式：手動輸入 (未偵測到雲端表)")
-        stock_id = st.text_input("輸入股票代號", value="VT").upper()
-        my_cost = st.number_input("平均買入成本", value=0.0)
+        st.error("❌ 找不到 'Ticker' 欄位，請檢查表格標題")
+        stock_id = st.text_input("手動輸入代號", value="VT").upper()
+        my_cost = st.number_input("平均成本", value=0.0)
         my_shares = st.number_input("持有股數", value=0)
+        ai_advice_from_sheet = None
 
-# 抓取數據
-@st.cache_data(ttl=3600)
-def get_data(ticker):
-    try:
-        df = yf.download(ticker, period="1y", auto_adjust=True)
-        return df
-    except:
-        return None
-
-df = get_data(stock_id)
-
-if df is not None and not df.empty:
-    # 格式處理
-    if isinstance(df.columns, pd.MultiIndex):
-        df_flat = pd.DataFrame(index=df.index)
-        df_flat['Close'] = df['Close'][stock_id]
-        df_flat['Open'] = df['Open'][stock_id]
-        df_flat['High'] = df['High'][stock_id]
-        df_flat['Low'] = df['Low'][stock_id]
-        df = df_flat
+# --- 4. 數據抓取與分析引擎 ---
+def get_analysis(ticker):
+    # 自動補全台股格式
+    yf_ticker = f"{ticker}.TW" if ticker.isdigit() else ticker
+    df = yf.download(yf_ticker, period="1y", auto_adjust=True)
+    if df.empty: return None
     
-    df = add_indicators(df)
+    # 處理 yfinance 多重索引
+    if isinstance(df.columns, pd.MultiIndex):
+        df = df.xs(yf_ticker, axis=1, level=1)
+        
+    # 計算技術指標
+    df['MA20'] = df['Close'].rolling(20).mean()
+    df['STD'] = df['Close'].rolling(20).std()
+    df['Upper'] = df['MA20'] + (df['STD'] * 2)
+    df['Lower'] = df['MA20'] - (df['STD'] * 2)
+    
+    # RSI 計算
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    df['RSI'] = 100 - (100 / (1 + (gain/loss)))
+    return df
+
+df = get_analysis(stock_id)
+
+# --- 5. 主畫面呈現 ---
+if df is not None:
     current_price = float(df['Close'].iloc[-1])
     rsi_val = float(df['RSI'].iloc[-1])
     upper_val = float(df['Upper'].iloc[-1])
     lower_val = float(df['Lower'].iloc[-1])
 
-    # --- 畫面：標題與個人損益 ---
     st.title(f"🔍 {stock_id} 分析師診斷報告")
     
-    col_p1, col_p2, col_p3 = st.columns(3)
-    if my_cost > 0:
-        profit = (current_price - my_cost) * my_shares
-        roi = (profit / (my_cost * my_shares)) * 100
-        col_p1.metric("資產價值", f"${current_price * my_shares:,.2f}")
-        col_p2.metric("預估獲利", f"${profit:,.2f}", f"{roi:.2f}%")
-        col_p3.metric("RSI 強弱值", f"{rsi_val:.1f}")
+    tab1, tab2 = st.tabs(["📈 即時戰情", "💰 資產概況"])
 
-    # --- 畫面：分析師預測區 ---
-    st.write("---")
-    st.subheader("🤖 AI 買賣點預測")
-    
-    c1, c2 = st.columns(2)
-    with c1:
-        st.write("📉 **低點分佈 (支撐位)**")
-        st.title(f"${lower_val:.2f}")
-        st.caption("統計學上的相對安全買入區間")
+    with tab1:
+        # AI 決策看板
+        st.subheader("🤖 AI 投資決策建議")
+        c1, c2, c3 = st.columns(3)
         
-    with c2:
-        st.write("📈 **高點分佈 (壓力位)**")
-        st.title(f"${upper_val:.2f}")
-        st.caption("統計學上的潛在獲利回檔區間")
+        # 決策邏輯：優先使用 analyzer.py 的結果，若無則現場計算
+        if ai_advice_from_sheet and str(ai_advice_from_sheet) != 'nan':
+            current_advice = ai_advice_from_sheet
+        else:
+            if current_price <= lower_val: current_advice = "💎 建議買進"
+            elif current_price >= upper_val: current_advice = "💰 建議變現"
+            else: current_advice = "⚖️ 持續觀望"
 
-    # 智慧診斷
-    if current_price <= lower_val and rsi_val < 35:
-        st.success("🌟 **診斷結果：強烈買入訊號**。股價進入超跌區且觸及地板，適合佈局。")
-    elif current_price >= upper_val and rsi_val > 65:
-        st.error("🔥 **診斷結果：超買警訊**。股價衝出天花板且情緒過熱，建議分批減碼。")
-    elif rsi_val < 40:
-        st.warning("⚖️ **診斷結果：股價偏弱**。目前市場信心不足，建議等站穩支撐位再行動。")
-    else:
-        st.info("⚖️ **診斷結果：區間震盪**。股價處於合理動盪範圍，暫時無極端訊號。")
+        c1.metric("診斷結果", current_advice)
+        c2.metric("RSI 強弱", f"{rsi_val:.1f}")
+        c3.metric("目前市價", f"${current_price:,.2f}")
 
-    # --- 畫面：視覺化 K 線 ---
-    fig = go.Figure()
-    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="K線"))
-    fig.add_trace(go.Scatter(x=df.index, y=df['Upper'], line=dict(color='rgba(255,0,0,0.3)'), name="預估高點"))
-    fig.add_trace(go.Scatter(x=df.index, y=df['Lower'], line=dict(color='rgba(0,255,0,0.3)'), name="預估低點"))
-    
-    fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False)
-    st.plotly_chart(fig, use_container_width=True)
+        # K 線圖
+        fig = go.Figure()
+        fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="K線"))
+        fig.add_trace(go.Scatter(x=df.index, y=df['Upper'], line=dict(color='rgba(255,0,0,0.3)'), name="預估高點"))
+        fig.add_trace(go.Scatter(x=df.index, y=df['Lower'], line=dict(color='rgba(0,255,0,0.3)'), name="預估低點"))
+        fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False)
+        st.plotly_chart(fig, use_container_width=True)
+
+    with tab2:
+        st.subheader("持有資產明細")
+        if my_cost > 0:
+            total_cost = my_cost * my_shares
+            current_value = current_price * my_shares
+            profit = current_value - total_cost
+            roi = (profit / total_cost) * 100
+            
+            m1, m2, m3 = st.columns(3)
+            m1.metric("資產現值", f"${current_value:,.2f}")
+            m2.metric("預估損益", f"${profit:,.2f}", f"{roi:.2f}%")
+            m3.metric("持有股數", f"{my_shares} 股")
+            
+            if growth_from_sheet:
+                st.info(f"雲端紀錄成長率：{growth_from_sheet}")
+        else:
+            st.warning("請確保 Google Sheets 中已填寫 Buy_Price 與 Shares")
 
 else:
-    st.error("數據載入失敗，請檢查代號。")
+    st.error("無法取得股票數據，請確認代號是否正確（台股請輸入數字，美股輸入代號）。")
