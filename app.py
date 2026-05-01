@@ -9,7 +9,7 @@ st.set_page_config(page_title="AI 股票分析師系統", layout="wide")
 
 # --- 雲端串接設定區 ---
 # 請在此處貼上你的 Google Sheets 共用網址
-RAW_URL = "https://docs.google.com/spreadsheets/d/1modHzl33LKOCGoRrobrMCaNEO5Phebe3Vl8eIUScU9M/export?format=csv"
+RAW_URL = "https://docs.google.com/spreadsheets/d/1modHzl33LKOCGoRrobrMCaNEO5Phebe3Vl8eIUScU9M/edit?gid=0#gid=0"
 
 # 自動處理網址轉換邏輯
 if "docs.google.com" in RAW_URL:
