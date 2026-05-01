@@ -9,7 +9,7 @@ st.set_page_config(page_title="個人股票戰情室", layout="wide")
 # --- 雲端串接設定區 ---
 # 請將下方的網址替換成你的 Google Sheets 共用網址
 # 記得要把網址最後面的 /edit... 之後的文字改成 /export?format=csv
-GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/你的ID/export?format=csv"
+GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1modHzl33LKOCGoRrobrMCaNEO5Phebe3Vl8eIUScU9M/export?format=csv"
 
 @st.cache_data(ttl=600)  # 每 10 分鐘更新一次雲端資料
 def load_data_from_gsheets(url):
